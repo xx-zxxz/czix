@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "czix"
+version = "0.1.0"
+description = "Unofficial launcher for Roblox on Linux (Waydroid phase 0)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Czix Project" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+]
+
+[project.scripts]
+czix = "czix.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

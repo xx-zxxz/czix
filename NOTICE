@@ -1,0 +1,25 @@
+The Czix project is a free, unofficial application launcher made to run the
+Roblox Android client on Linux. It is an unofficial community project; it does
+not generate any revenue for its authors whatsoever.
+
+Czix is completely unaffiliated with Roblox or its partners. Czix is not
+affiliated with Google, Android, or the Android Open Source Project.
+
+Czix does not redistribute any part of Roblox's intellectual property or code.
+Instead, Czix downloads the Roblox Application Bundle (APK) directly from a
+public mirror of the officially published application (APKPure, Internet
+Archive), and verifies its signing certificate before installing it. Users are
+responsible for their own downloads — Czix is only a delivery and trust
+machinery for a file the user could download themselves, pinned to the official
+signer for safety.
+
+Given Czix's experimental nature, and given Roblox does NO testing or quality
+assurance for Czix clients, there is a chance that using it can lead to a
+broken experience or an account suspension (third-party clients are a Terms of
+Service gray area for most platforms). You use Czix at your own risk.
+
+The Czix project does not support any misuse of Roblox systems or platforms;
+cheating, exploiting, or bypassing payment systems are strictly out of scope
+for this project and its community.
+
+Czix is not endorsed by any of the projects, persons, or companies listed above.

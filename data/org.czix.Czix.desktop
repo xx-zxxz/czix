@@ -1,0 +1,11 @@
+#!/usr/bin/env
+[Desktop Entry]
+Type=Application
+Name=Czix
+GenericName=Roblox launcher
+Comment=Play Roblox on Linux via Waydroid (unofficial)
+Exec=czix launch
+Icon=org.czix.Czix
+Categories=Game;Network;
+Keywords=roblox;android;linux;
+# TODO: ship a real icon asset (data/org.czix.Czix.svg — PR welcome)

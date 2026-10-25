@@ -1,0 +1,29 @@
+# Flatpak skeleton for Czix.
+#
+# Design notes:
+# - The CLI runs inside the sandbox and talks to the host Waydroid via
+#   `flatpak-spawn --host` (czix auto-prefixes when FLATPAK_ID is set),
+#   so no waydroid daemon lives inside the Flatpak.
+# - Network + input + audio are needed for the Waydroid UI window on the host
+#   side; in-sandbox we mostly need `--talk-name=org.freedesktop.Flatpak`.
+app:
+  id: org.czix.Czix
+  branch: stable
+  runtime: org.freedesktop.Platform
+  runtime-version: "24.08"
+  sdk: org.freedesktop.Sdk
+  command: czix
+finish-args:
+  - --share=network            # APK downloads
+  - --talk-name=org.freedesktop.Flatpak   # flatpak-spawn --host (host waydroid)
+  - --device=dri               # games window gl hints (harmless)
+build-options:
+  env: {}
+modules:
+  - name: czix
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-deps --prefix=${FLATPAK_DEST} .
+    sources:
+      - type: dir
+        path: ..
