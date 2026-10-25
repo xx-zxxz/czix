@@ -3,8 +3,8 @@
 ## Sources
 | Source      | Kind   | Freshness | Notes |
 |-------------|--------|-----------|-------|
-| `apkpure`   | direct | latest    | Mirrors of the official Google Play build, signature-identical. We probe the direct endpoint `d.apkpure.com/b/APK/<pkg>?version=latest` and fall back to scraping the app page. |
-| `archive`   | direct | may lag   | Internet Archive item *ROBLOX Android Archive* (`com.roblox.client`), dozens of historical versions. Good fallback when mirrors are down. |
+| `apkpure`   | direct | latest    | Mirrors of the official Google Play build. We prefer the **XAPK route** (`d.apkpure.com/b/XAPK/...`) because Roblox's engine binaries live in *ABI splits* that only ship inside the bundle — the bare-APK endpoint mirrors just the lib-less base split (found live: 99 MiB, zero `lib/*.so`). Czix unpacks base+config splits and installs them together via `pm install-create`. |
+| `archive`   | direct | may lag   | Internet Archive item *ROBLOX Android Archive* (`com.roblox.client`), filtered strictly to official-package names (rejects `com.tencent.*` lookalikes seen in that item). |
 | manual      | local  | n/a       | `czix install ./path.apk` always works. The user downloaded the file themselves. |
 
 ## What we deliberately DO NOT do

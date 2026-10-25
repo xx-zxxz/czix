@@ -18,11 +18,16 @@ launcher) to Phase 2 (bespoke runtime, Sober-class).
 - [ ] Gamepad passthrough notes; multi-window tweaks
 
 ## Phase 1 — *learn the API surface*
-- [ ] Config: FPS cap unlock, GLES renderer preference (vstr)
-- [ ] Trace which Android APIs Roblox calls (strace under Waydroid, `ltrace`,
-      plumbing from Lineage logs) → `API-SURFACE.md`
-- [ ] Prototype: run the extracted `lib/*.so` directly against a tiny shim
-      (EGL/GLES via surfaceless Wayland, PipeWire audio) on a hello-window
+- [x] **`czix surface`** — static NDK/Android API mapping from the APK's
+      `lib/*.so` (stdlib-only ELF32/64 parser; imports by category, DT_NEEDED,
+      JNI bridge). First real output: `docs/API-SURFACE.md` (arm64-v8a).
+- [ ] Runtime trace: strace/logcat under Waydroid → which APIs actually fire
+- [ ] Graphics path decision: GLES (seen imported: libEGL/libGLESv2, no vk)
+      → shim via Wayland+EGL surfaceless first
+- [ ] **x86_64 gap discovered**: APKPure splits pack arm64-v8a only; x86_64
+      Android builds exist upstream (Play metadata lists x86_64) but need a
+      Play-mirror/split-source (Aurora-style) or ABI parameter … TBD
+- [ ] Config: FPS cap unlock, GLES renderer preference
 - [ ] Benchmark: Waydroid vs Windows native on same GPU
 
 ## Phase 2 — *bespoke runtime* (Sober-class, open source)

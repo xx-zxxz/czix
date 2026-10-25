@@ -12,6 +12,7 @@ from ..apk import UA, run_with_budget
 REFERER = "https://apkpure.com/"
 
 _APPS_URL = "https://d.apkpure.com/b/APK/{pkg}?version=latest"
+_XAPK_URL = "https://d.apkpure.com/b/XAPK/{pkg}?version=latest"
 _PAGE_URL = "https://apkpure.com/roblox/{pkg}"
 
 
@@ -30,11 +31,15 @@ def _probe(url: str, headers: dict) -> str | None:
 
 def resolve(package: str, cfg: dict) -> dict:
     headers = {"User-Agent": UA, "Referer": REFERER}
-    for url in (_APPS_URL.format(pkg=package),):
-        ok = _probe(url, headers)
+    # NOTE: prefer the XAPK (split-bundle) route. Roblox ships its native
+    # libraries in ABI *splits* on Play; the bare-APK endpoint only mirrors
+    # the base split (no lib/*.so → a dead install).
+    for url, kind in ((_XAPK_URL, "XAPK (base + ABI split bundle)"),
+                      (_APPS_URL, "APK")):
+        ok = _probe(url.format(pkg=package), headers)
         if ok:
             return {"url": ok, "headers": headers, "source": "apkpure",
-                    "note": "direct APKPure endpoint (latest)"}
+                    "note": f"direct APKPure endpoint: {kind}"}
 
     # fallback: scrape the app page for a direct download link
     req = urllib.request.Request(_PAGE_URL.format(pkg=package),

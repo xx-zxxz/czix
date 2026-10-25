@@ -5,6 +5,7 @@ behavior. It bootstraps the environment, installs Roblox on first run, keeps
 it silently up to date, and launches the game in its own window.
 """
 import argparse
+import json
 import os
 import pathlib
 import re
@@ -35,8 +36,9 @@ def _resolve_source(source: str, package: str, cfg: dict) -> dict:
 
 
 def _fetch_to_disk(cfg: dict, package: str, source: str,
-                   dest_dir: pathlib.Path) -> list[pathlib.Path]:
+                   dest_dir: pathlib.Path) -> tuple[list[pathlib.Path], dict]:
     """Resolve + download + normalize. Raises RuntimeError/TimeoutError."""
+    import zipfile as _zf
     cand = _resolve_source(source, package, cfg)
     if not os.environ.get("CZIX_QUIET"):
         print(f"  {cand['note']}\nDownloading → {dest_dir}")
@@ -46,11 +48,20 @@ def _fetch_to_disk(cfg: dict, package: str, source: str,
     apks = apk.normalize_bundle(raw, work_dir=dest_dir)
     if not apks:
         raise RuntimeError(f"{raw} is not a valid APK/bundle (HTML page? bad link?).")
+    meta: dict = {}
+    try:
+        with _zf.ZipFile(raw) as z:
+            if "manifest.json" in z.namelist():
+                meta = json.loads(z.read("manifest.json"))
+    except Exception:  # noqa: BLE001 — cosmetic metadata only
+        pass
     if not os.environ.get("CZIX_QUIET"):
-        for info in (apk.inspect(p) for p in apks):
-            print(info.describe())
+        for path_ in apks:
+            print(apk.inspect(path_).describe())
             print("-" * 46)
-    return apks
+    version = (apk.inspect(apks[0]).version_name
+               or meta.get("version_name") or meta.get("vername"))
+    return apks, {**meta, "version": version}
 
 
 def _vkey(version: str | None):
@@ -67,7 +78,7 @@ def cmd_fetch(ns) -> int:
     print(f"Resolving latest {package} via {source} …")
     budget = int(os.environ.get("CZIX_RESOLVE_TIMEOUT", "90"))
     try:
-        apks = apk.run_with_budget(lambda: _fetch_to_disk(
+        apks, meta = apk.run_with_budget(lambda: _fetch_to_disk(
             cfg, package, source,
             pathlib.Path(ns.dir or cfg["download_dir"]).expanduser()), budget)
     except (RuntimeError, TimeoutError) as e:
@@ -78,7 +89,7 @@ def cmd_fetch(ns) -> int:
     config.save_state("last", {
         "package": package, "source": source,
         "apks": [str(p) for p in apks],
-        "sha256": info.sha256, "version": info.version_name,
+        "sha256": info.sha256, "version": meta.get("version"),
     })
     print(f"{len(apks)} APK file(s) ready. Next: `czix trust` then `czix install`")
     print(NOTICE_SHORT)
@@ -92,7 +103,8 @@ def _latest_paths(cfg: dict) -> list[pathlib.Path]:
     return [pathlib.Path(p) for p in st["apks"]]
 
 
-def _pin_if_first(cfg: dict, apks: list[pathlib.Path], info: apk.ApkInfo) -> None:
+def _pin_if_first(cfg: dict, apks: list[pathlib.Path],
+                  version: str | None) -> None:
     """TOFU: on the very first install, pin the official signer silently."""
     digest = apk.verify_signature(apks[0])
     if digest is None:
@@ -100,7 +112,7 @@ def _pin_if_first(cfg: dict, apks: list[pathlib.Path], info: apk.ApkInfo) -> Non
               "(install Android build-tools for stronger verification).")
         return
     if config.read_trusted(cfg["package"]) is None:
-        config.pin_trusted(cfg["package"], digest, info.version_name)
+        config.pin_trusted(cfg["package"], digest, version)
         print(f"Pinned official signing cert {digest[:24]}… (TOFU)")
 
 
@@ -123,12 +135,32 @@ def _check_pinned(cfg: dict, paths: list[pathlib.Path], force: bool) -> bool:
     return True
 
 
+def _verify_installable(cfg: dict, paths: list[pathlib.Path],
+                        force: bool = False) -> bool:
+    """A single bare APK without native libs can never run — refuse it."""
+    abis: set[str] = set()
+    for p in paths:
+        abis.update(apk.inspect(p).abis)
+    if abis:
+        return True
+    print("ERROR: no native libraries (lib/*.so) in these APK file(s).\n"
+          "       This looks like a bare BASE split — the engine binaries live "
+          "in ABI splits that only ship inside an XAPK bundle.\n"
+          "       Fix: `czix fetch` (now prefers the XAPK route) and retry.")
+    if force:
+        print("Proceeding only because --force was given.")
+        return True
+    return False
+
+
 def cmd_install(ns) -> int:
     cfg = config.load_config()
     paths = [pathlib.Path(p) for p in (ns.paths or [])] or _latest_paths(cfg)
     for p in paths:
         if not p.exists():
             raise SystemExit(f"missing APK: {p}")
+    if not _verify_installable(cfg, paths, ns.force):
+        return 2
     if not _check_pinned(cfg, paths, ns.force):
         return 2
     ok = waydroid.install(paths)
@@ -184,16 +216,18 @@ def _ensure_installed(cfg: dict, package: str, update: bool = False) -> bool:
     source = cfg["source"]
     try:
         dest_dir = pathlib.Path(cfg["download_dir"]).expanduser()
-        apks = _fetch_to_disk(cfg, package, source, dest_dir)
-        info = apk.inspect(apks[0])
-        _pin_if_first(cfg, apks, info)
+        apks, meta = _fetch_to_disk(cfg, package, source, dest_dir)
+        info_v = meta.get("version") or apk.inspect(apks[0]).version_name
+        if not _verify_installable(cfg, apks, force=False):
+            return False
+        _pin_if_first(cfg, apks, info_v)
         if config.read_trusted(cfg["package"]) is not None:
             if not _check_pinned(cfg, apks, force=False):
                 return False
         if not waydroid.install(apks):
             return False
         config.save_state("installed", {
-            "package": package, "version": info.version_name})
+            "package": package, "version": info_v})
         return True
     except (RuntimeError, TimeoutError) as e:
         print(f"ERROR during {'update' if update else 'install'}: {e}")
@@ -285,6 +319,30 @@ def cmd_info(ns) -> int:
     return 0
 
 
+def cmd_surface(ns) -> int:
+    from . import surface
+    paths = [pathlib.Path(p) for p in (ns.paths or [])] or _latest_paths(cfg_paths_fallback())
+    for p in paths:
+        if not p.exists():
+            raise SystemExit(f"missing file: {p}")
+    summary = surface.summarize(paths)
+    line = surface.render_terminal(summary)
+    print(line)
+    if ns.json_out:
+        pathlib.Path(ns.json_out).write_text(surface.json_dumps(summary),
+                                             encoding="utf-8")
+        print(f"full JSON → {ns.json_out}")
+    if ns.md_out:
+        pathlib.Path(ns.md_out).write_text(surface.render_markdown(summary),
+                                           encoding="utf-8")
+        print(f"markdown  → {ns.md_out}")
+    return 0
+
+
+def cfg_paths_fallback() -> dict:
+    return {"download_dir": config.load_config()["download_dir"]}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="czix",
@@ -338,6 +396,12 @@ def main(argv=None) -> int:
     p.add_argument("--fix", action="store_true",
                    help="attempt auto-fixes (pkexec, multi-window mode, session)")
     p.set_defaults(func=cmd_doctor)
+    p = sub.add_parser("surface", parents=[common],
+                       help="static Android/NDK API-surface analysis of an APK")
+    p.add_argument("paths", nargs="*")
+    p.add_argument("--json", dest="json_out", help="write full symbol JSON here")
+    p.add_argument("--md", dest="md_out", help="write markdown report here")
+    p.set_defaults(func=cmd_surface)
     sub.add_parser("notice", parents=[common],
                    help="show legal notice").set_defaults(func=cmd_notice)
 

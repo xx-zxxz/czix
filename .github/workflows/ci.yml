@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Byte-compile everything
+        run: python -m compileall -q src tests
+      - name: CLI smoke (help/notice/doctor paths)
+        run: |
+          PYTHONPATH=src python3 -m czix --help
+          PYTHONPATH=src python3 -m czix notice | head -3
+          PYTHONPATH=src python3 -m czix doctor || true   # stub env → guidance ok
+      - name: Unit tests (stdlib only)
+        run: python3 tests/test_units.py
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - name: ruff (syntax + bugs, not style-nitpicks)
+        run: ruff check --select E9,F63,F7,F82,B006,B011,TRY002 src tests

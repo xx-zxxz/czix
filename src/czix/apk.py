@@ -197,6 +197,9 @@ def normalize_bundle(path: Path, work_dir: Path | None = None,
 
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
+        # keep bundle metadata (XAPK manifest.json: version_name, xapk:name…)
+        if "manifest.json" in names:
+            (out_dir / "bundle_meta.json").write_bytes(z.read("manifest.json"))
         apk_names = [n for n in names if n.lower().endswith(".apk")]
         if not apk_names:
             # maybe *this* zip has a nested container
