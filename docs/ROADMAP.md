@@ -9,8 +9,12 @@ launcher) to Phase 2 (bespoke runtime, Sober-class).
 - [x] Waydroid install: single APK + split-APK streaming via `pm install-*`
 - [x] TOFU signature pinning (`czix trust`) with mismatch abort
 - [x] `doctor` env checks; Flatpak-aware host command dispatch
+- [x] **Sober-style `czix play`**: bootstrap (pkexec container start, session
+      daemon, multi-window single-game-window mode), first-run fetch+verify+
+      install, silent auto-update on every launch
+- [x] `czix update` standalone; version probe via APKPure metadata (no DL)
 - [ ] Real icon + Flathub-quality manifest polishing
-- [ ] `update` one-shot (fetch+trust-check+install)
+- [ ] `czix doctor --fix` for image init (`waydroid init` needs sudo discussion)
 - [ ] Gamepad passthrough notes; multi-window tweaks
 
 ## Phase 1 — *learn the API surface*

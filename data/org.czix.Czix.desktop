@@ -3,8 +3,8 @@
 Type=Application
 Name=Czix
 GenericName=Roblox launcher
-Comment=Play Roblox on Linux via Waydroid (unofficial)
-Exec=czix launch
+Comment=Play Roblox on Linux — one click (unofficial)
+Exec=czix play
 Icon=org.czix.Czix
 Categories=Game;Network;
 Keywords=roblox;android;linux;

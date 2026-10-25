@@ -120,6 +120,11 @@ def inspect(path: Path) -> ApkInfo:
     info.sha256 = sha256_file(path)
     if is_apk(path):
         _aapt_inspect(path, info)
+        if not info.version_name:
+            # no aapt? best-effort from the file name (mirrors embed version)
+            m = re.search(r"(\d+(?:\.\d+){1,3})", path.name)
+            if m:
+                info.version_name = m.group(1)
         try:
             with zipfile.ZipFile(path) as z:
                 if not info.abis:

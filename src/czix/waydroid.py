@@ -33,6 +33,20 @@ def run(args: list, timeout: int = 300, **kw) -> subprocess.CompletedProcess:
                           text=True, timeout=timeout, **kw)
 
 
+def status_text() -> dict:
+    """Parse `waydroid status` into {'session': 'RUNNING', ...} or {}."""
+    wd = waydroid()
+    if not wd:
+        return {}
+    try:
+        p = run(["status"], timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    out = (p.stdout + p.stderr)
+    d = {k.lower(): v for k, v in re.findall(r"(Session|Container|Service):\s+([A-Z]+)", out)}
+    return d
+
+
 def status() -> tuple[bool, str]:
     wd = waydroid()
     if not wd:
@@ -119,13 +133,138 @@ def launch(package: str) -> bool:
         return False
 
 
-def doctor() -> list[tuple[str, bool, str]]:
+# ---- environment bootstrap (Sober-style click-to-play support) --------------
+
+def _pkexec(args: list, timeout: int = 300) -> bool:
+    exe = shutil.which("pkexec")
+    if not exe:
+        return False
+    try:
+        p = subprocess.run([exe] + args, capture_output=True, text=True,
+                           timeout=timeout)
+        return p.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _poll(fn, timeout_s: int, interval: float = 1.0) -> bool:
+    import time
+    end = time.time() + timeout_s
+    while time.time() < end:
+        if fn():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _container_running() -> bool:
+    return status_text().get("container") == "RUNNING"
+
+
+def _session_running() -> bool:
+    return status_text().get("session") == "RUNNING"
+
+
+def ensure_environment(auto: bool = True) -> tuple[bool, str]:
+    """Get to: container up + session up + single-window mode. Best effort."""
+    wd = waydroid()
+    if not wd:
+        return False, "waydroid not found"
+    st = status_text()
+    if st.get("container", "").startswith("NOT RUNNING") or \
+       (st and st.get("container") != "RUNNING"):
+        if not auto:
+            return False, "waydroid container is not running"
+        print("Starting waydroid container (needs authorization via pkexec)…")
+        if _pkexec(["systemctl", "start", "waydroid-container"]):
+            if not _poll(_container_running, 20):
+                return False, "container start command ran but state stays: " \
+                              + status_text().get("container", "?")
+        else:
+            return False, "could not start container; run once: " \
+                          "sudo systemctl start waydroid-container"
+    if st.get("service") == "NOT RUNNING" and st:
+        if not auto:
+            return False, "waydroid service is not running (needs image init: " \
+                          "sudo waydroid init)"
+        else:
+            return False, "waydroid has no image; run once: sudo waydroid init"
+
+    if not _session_running():
+        if not auto:
+            return False, "waydroid session is not running"
+        # session start is a long-lived daemon; detach it
+        try:
+            subprocess.Popen(waydroid() + ["session", "start"],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError as e:
+            return False, f"could not start session: {e}"
+        if not _poll(_session_running, 25):
+            return False, "session did not come up (are you in a desktop " \
+                          "session? run `waydroid session start` manually)"
+
+    # single-window mode ≈ Sober UX: each app opens in its own window
+    if _prop_get("persist.waydroid.multi_windows") not in ("true",):
+        if not _prop_set("persist.waydroid.multi_windows", "true"):
+            print("  note: could not enable multi-window mode. For single-window "
+                  "launches run: sudo waydroid prop set "
+                  "persist.waydroid.multi_windows true")
+    return True, "ready"
+
+
+def _prop_get(name: str) -> str:
+    try:
+        p = run(["prop", "get", name], timeout=30)
+        return (p.stdout or p.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _prop_set(name: str, value: str) -> bool:
+    """Try user-level set; fall back to pkexec."""
+    try:
+        p = run(["prop", "set", name, value], timeout=30)
+        if p.returncode == 0:
+            return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return _pkexec(["waydroid", "prop", "set", name, value])
+
+
+def installed_version(package: str) -> str | None:
+    """versionName of `package` inside the container, or None."""
+    try:
+        p = run(["shell", "--", "pm", "dump", package], timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"versionName=([0-9][^\s]+)", p.stdout or "")
+    return m.group(1) if m else None
+
+
+def doctor(fix: bool = False) -> list[tuple[str, bool, str]]:
     checks: list[tuple[str, bool, str]] = []
     wd = waydroid()
     checks.append(("waydroid binary", bool(wd), HINT if not wd else "ok"))
     if wd:
-        ok, msg = status()
-        checks.append(("waydroid running", ok, "ok" if ok else msg))
+        st = status_text()
+        cok = st.get("container") == "RUNNING"
+        sok = st.get("session") == "RUNNING"
+        checks.append(("waydroid container", cok,
+                       "ok" if cok else "--fix will pkexec systemctl start it"))
+        checks.append(("waydroid session", sok,
+                       "ok" if sok else "--fix will start it (desktop needed)"))
+        mw = _prop_get("persist.waydroid.multi_windows")
+        checks.append(("single-window mode", mw == "true",
+                       "ok" if mw == "true" else
+                       "sudo waydroid prop set persist.waydroid.multi_windows true"))
+        if fix:
+            ensure_environment(auto=True)
+            st = status_text()
+            cok = st.get("container") == "RUNNING"
+            sok = st.get("session") == "RUNNING"
+            checks.append(("waydroid container (after fix)", cok, "ok" if cok else "failed"))
+            checks.append(("waydroid session (after fix)", sok, "ok" if sok else "failed"))
     for tool, hint in (("apksigner", "install 'apksigner' (Android build-tools) "
                                      "for signature pinning"),
                        ("aapt", "optional: install 'aapt' for richer APK info"),

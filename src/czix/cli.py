@@ -1,7 +1,13 @@
-"""Czix CLI — fetch/verify/install/launch the Roblox Android client."""
+"""Czix CLI — fetch/verify/install/update/launch the Roblox Android client.
+
+`czix play` is the Sober-style UX: guaranteed single command / double-click
+behavior. It bootstraps the environment, installs Roblox on first run, keeps
+it silently up to date, and launches the game in its own window.
+"""
 import argparse
 import os
 import pathlib
+import re
 import sys
 
 from . import __version__, apk, config, waydroid
@@ -15,6 +21,8 @@ NOTICE_SHORT = (
     "area and may lead to account actions. See `czix notice`."
 )
 
+_VERSION_RE = r"(\d+)\.?(\d+)?\.?(\d+)?"
+
 
 def _resolve_source(source: str, package: str, cfg: dict) -> dict:
     if source == "apkpure":
@@ -26,6 +34,32 @@ def _resolve_source(source: str, package: str, cfg: dict) -> dict:
     raise SystemExit(f"unknown source {source!r}")
 
 
+def _fetch_to_disk(cfg: dict, package: str, source: str,
+                   dest_dir: pathlib.Path) -> list[pathlib.Path]:
+    """Resolve + download + normalize. Raises RuntimeError/TimeoutError."""
+    cand = _resolve_source(source, package, cfg)
+    if not os.environ.get("CZIX_QUIET"):
+        print(f"  {cand['note']}\nDownloading → {dest_dir}")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    raw = apk.download(cand["url"], dest_dir, headers=cand["headers"],
+                       timeout_s=int(cfg["timeout_s"]))
+    apks = apk.normalize_bundle(raw, work_dir=dest_dir)
+    if not apks:
+        raise RuntimeError(f"{raw} is not a valid APK/bundle (HTML page? bad link?).")
+    if not os.environ.get("CZIX_QUIET"):
+        for info in (apk.inspect(p) for p in apks):
+            print(info.describe())
+            print("-" * 46)
+    return apks
+
+
+def _vkey(version: str | None):
+    if not version:
+        return None
+    parts = re.findall(r"\d+", version)
+    return tuple(int(p) for p in parts[:3]) if parts else None
+
+
 def cmd_fetch(ns) -> int:
     cfg = config.load_config()
     package = ns.package or cfg["package"]
@@ -33,37 +67,18 @@ def cmd_fetch(ns) -> int:
     print(f"Resolving latest {package} via {source} …")
     budget = int(os.environ.get("CZIX_RESOLVE_TIMEOUT", "90"))
     try:
-        cand = apk.run_with_budget(_resolve_source, budget,
-                                   source, package, cfg)
-        print(f"  {cand['note']}")
-
-        dest_dir = pathlib.Path(ns.dir or cfg["download_dir"]).expanduser()
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Downloading → {dest_dir}")
-        raw = apk.download(cand["url"], dest_dir, headers=cand["headers"],
-                           timeout_s=int(cfg["timeout_s"]))
+        apks = apk.run_with_budget(lambda: _fetch_to_disk(
+            cfg, package, source,
+            pathlib.Path(ns.dir or cfg["download_dir"]).expanduser()), budget)
     except (RuntimeError, TimeoutError) as e:
         print(f"ERROR: {e}")
         return 1
 
-    print("Normalizing bundle…")
-    apks = apk.normalize_bundle(raw, work_dir=dest_dir)
-    if not apks:
-        # keep the artifact for manual inspection, still fail loudly
-        print(f"ERROR: {raw} is not a valid APK/bundle (HTML page? bad link?).")
-        config.save_state("last", {"package": package, "source": source})
-        return 1
-
-    infos = [apk.inspect(p) for p in apks]
-    for info in infos:
-        print(info.describe())
-        print("-" * 46)
-
+    info = apk.inspect(apks[0])
     config.save_state("last", {
         "package": package, "source": source,
         "apks": [str(p) for p in apks],
-        "sha256": infos[0].sha256,
-        "version": infos[0].version_name,
+        "sha256": info.sha256, "version": info.version_name,
     })
     print(f"{len(apks)} APK file(s) ready. Next: `czix trust` then `czix install`")
     print(NOTICE_SHORT)
@@ -77,32 +92,51 @@ def _latest_paths(cfg: dict) -> list[pathlib.Path]:
     return [pathlib.Path(p) for p in st["apks"]]
 
 
+def _pin_if_first(cfg: dict, apks: list[pathlib.Path], info: apk.ApkInfo) -> None:
+    """TOFU: on the very first install, pin the official signer silently."""
+    digest = apk.verify_signature(apks[0])
+    if digest is None:
+        print("apksigner not found — skipping TOFU pin "
+              "(install Android build-tools for stronger verification).")
+        return
+    if config.read_trusted(cfg["package"]) is None:
+        config.pin_trusted(cfg["package"], digest, info.version_name)
+        print(f"Pinned official signing cert {digest[:24]}… (TOFU)")
+
+
+def _check_pinned(cfg: dict, paths: list[pathlib.Path], force: bool) -> bool:
+    digest = apk.verify_signature(paths[0])
+    if digest is None:
+        print("apksigner not found — skipping signature pin check.")
+        return True
+    trusted = config.read_trusted(cfg["package"])
+    if trusted and trusted["cert_sha256"] != digest:
+        print(f"SIGNATURE MISMATCH!\n  pinned: {trusted['cert_sha256']}\n"
+              f"  got:    {digest}")
+        if not force:
+            print("Refusing to install. Use `czix install --force` — then re-run "
+                  "`czix trust` to re-pin.")
+            return False
+        print("Proceeding with --force …")
+    elif not trusted:
+        print(f"Cert {digest[:24]}… not pinned yet. Run `czix trust` (TOFU).")
+    return True
+
+
 def cmd_install(ns) -> int:
     cfg = config.load_config()
     paths = [pathlib.Path(p) for p in (ns.paths or [])] or _latest_paths(cfg)
     for p in paths:
         if not p.exists():
             raise SystemExit(f"missing APK: {p}")
-
-    digest = apk.verify_signature(paths[0])
-    if digest is None:
-        print("apksigner not found — skipping signature pin check "
-              "(install Android build-tools for stronger verification).")
-    else:
-        trusted = config.read_trusted(cfg["package"])
-        if trusted and trusted["cert_sha256"] != digest:
-            print(f"SIGNATURE MISMATCH!\n  pinned: {trusted['cert_sha256']}\n"
-                  f"  got:    {digest}")
-            if not ns.force:
-                print("Refusing to install. If you really mean it: czix install "
-                      "--force (then re-run `czix trust`.)")
-                return 2
-            print("Proceeding with --force …")
-        elif not trusted:
-            print(f"Cert {digest[:24]}… is not pinned yet. Run `czix trust` "
-                  "to pin it (TOFU).")
-
-    return 0 if waydroid.install(paths) else 1
+    if not _check_pinned(cfg, paths, ns.force):
+        return 2
+    ok = waydroid.install(paths)
+    if ok:
+        info = apk.inspect(paths[0])
+        config.save_state("installed", {
+            "package": cfg["package"], "version": info.version_name})
+    return 0 if ok else 1
 
 
 def cmd_trust(ns) -> int:
@@ -117,8 +151,94 @@ def cmd_trust(ns) -> int:
     config.pin_trusted(cfg["package"], digest, info.version_name)
     print(f"Pinned {cfg['package']} certificate {digest} (version "
           f"{info.version_name or '?'}). Future updates with a different cert "
-          "will be refused at `czix install`.")
+          "will be refused at install.")
     return 0
+
+
+# ---- Sober-style one-command flow ------------------------------------------
+
+def _maybe_auto_update(cfg: dict, package: str, installed: str | None,
+                       quiet_ok: bool) -> bool:
+    """True if an update happened. Silent skip when offline/unknown."""
+    if installed is None:
+        return False
+    from .sources import apkpure
+    latest = None
+    try:
+        latest = apk.run_with_budget(apkpure.latest_version, 8, package)
+    except BaseException:  # offline / mirror hiccup → don't block launch
+        return False
+    if not latest or not latest.get("version_name"):
+        return False
+    new, old = _vkey(latest["version_name"]), _vkey(installed)
+    if new is None or old is None or new <= old:
+        if not quiet_ok:
+            print(f"Up to date ({installed}).")
+        return False
+    print(f"Roblox {latest['version_name']} available (installed {installed}) "
+          "— updating…")
+    return _ensure_installed(cfg, package, update=True)
+
+
+def _ensure_installed(cfg: dict, package: str, update: bool = False) -> bool:
+    source = cfg["source"]
+    try:
+        dest_dir = pathlib.Path(cfg["download_dir"]).expanduser()
+        apks = _fetch_to_disk(cfg, package, source, dest_dir)
+        info = apk.inspect(apks[0])
+        _pin_if_first(cfg, apks, info)
+        if config.read_trusted(cfg["package"]) is not None:
+            if not _check_pinned(cfg, apks, force=False):
+                return False
+        if not waydroid.install(apks):
+            return False
+        config.save_state("installed", {
+            "package": package, "version": info.version_name})
+        return True
+    except (RuntimeError, TimeoutError) as e:
+        print(f"ERROR during {'update' if update else 'install'}: {e}")
+        return False
+
+
+def cmd_play(ns) -> int:
+    cfg = config.load_config()
+    package = ns.package or cfg["package"]
+
+    if waydroid.waydroid() is None:
+        print("Czix needs Waydroid.\n" + waydroid.HINT)
+        return 1
+    ok, msg = waydroid.ensure_environment(auto=not ns.no_fix)
+    if not ok:
+        print(f"Environment not ready: {msg}\n{waydroid.HINT}")
+        return 1
+
+    installed = waydroid.installed_version(package) \
+        or (config.read_state("installed") or {}).get("version")
+
+    if installed is None:
+        print("Roblox is not installed in the container yet — "
+              "fetching the official client…")
+        if not _ensure_installed(cfg, package):
+            return 1
+        installed = (config.read_state("installed") or {}).get("version")
+
+    if not ns.no_update:
+        _maybe_auto_update(cfg, package, installed, quiet_ok=not ns.verbose_update)
+        installed = (config.read_state("installed") or {}).get("version") or installed
+
+    return 0 if waydroid.launch(package) else 1
+
+
+def cmd_update(ns) -> int:
+    cfg = config.load_config()
+    package = ns.package or cfg["package"]
+    installed = waydroid.installed_version(package) \
+        or (config.read_state("installed") or {}).get("version")
+    if installed is None:
+        print("No installed version recorded — running `czix play` will install.")
+        return 1
+    updated = _maybe_auto_update(cfg, package, installed, quiet_ok=False)
+    return 0 if updated else 0  # 'already up to date' is not an error
 
 
 def cmd_launch(ns) -> int:
@@ -129,14 +249,14 @@ def cmd_launch(ns) -> int:
 
 def cmd_status(ns) -> int:
     ok, msg = waydroid.status()
-    print(("WANT: READY — " if ok else "WANT: NOT READY — ") + msg)
+    print(("READY — " if ok else "NOT READY — ") + msg)
     return 0 if ok else 1
 
 
 def cmd_doctor(ns) -> int:
     print("czix doctor")
     bad = 0
-    for name, ok, note in waydroid.doctor():
+    for name, ok, note in waydroid.doctor(fix=ns.fix):
         mark = "✓" if ok else "✗"
         print(f"  [{mark}] {name:18} {note}")
         bad += 0 if ok else 1
@@ -154,10 +274,21 @@ def cmd_notice(ns) -> int:
     return 0
 
 
+def cmd_info(ns) -> int:
+    paths = [pathlib.Path(p) for p in (ns.paths or [])]
+    if not paths:
+        print("usage: czix info <apk-or-bundle> [...]")
+        return 2
+    for path in paths:
+        print(apk.inspect(path).describe())
+        print("-" * 46)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="czix",
-        description="Unofficial Roblox-on-Linux launcher (Waydroid phase 0)",
+        description="Unofficial Roblox-on-Linux launcher (Waydroid-based)",
         epilog="Not affiliated with Roblox Corporation. See NOTICE.")
     ap.add_argument("--source", choices=sorted(SOURCES),
                     help="APK source (default: config, else apkpure)")
@@ -172,6 +303,16 @@ def main(argv=None) -> int:
     common.add_argument("--package")
     common.add_argument("--dir")
 
+    p = sub.add_parser("play", parents=[common],
+                       help="(Sober-style) bootstrap + update + launch Roblox")
+    p.add_argument("--no-fix", action="store_true",
+                   help="don't attempt to fix/start environment")
+    p.add_argument("--no-update", action="store_true",
+                   help="skip the silent update check")
+    p.add_argument("--verbose-update", action="store_true",
+                   help="print 'up to date' instead of staying silent")
+    p.set_defaults(func=cmd_play)
+
     sub.add_parser("fetch", parents=[common],
                    help="download latest APK / bundle").set_defaults(func=cmd_fetch)
     p = sub.add_parser("info", parents=[common], help="inspect an APK/bundle")
@@ -185,28 +326,23 @@ def main(argv=None) -> int:
     p = sub.add_parser("trust", parents=[common], help="TOFU-pin the signing cert")
     p.add_argument("paths", nargs="*")
     p.set_defaults(func=cmd_trust)
+    p = sub.add_parser("update", parents=[common],
+                       help="check + silently apply newer Roblox version")
+    p.set_defaults(func=cmd_update)
     p = sub.add_parser("launch", parents=[common], help="launch Roblox in Waydroid")
     p.set_defaults(func=cmd_launch)
     sub.add_parser("status", parents=[common],
                    help="waydroid status").set_defaults(func=cmd_status)
-    sub.add_parser("doctor", parents=[common],
-                   help="check the environment").set_defaults(func=cmd_doctor)
+    p = sub.add_parser("doctor", parents=[common],
+                       help="check the environment")
+    p.add_argument("--fix", action="store_true",
+                   help="attempt auto-fixes (pkexec, multi-window mode, session)")
+    p.set_defaults(func=cmd_doctor)
     sub.add_parser("notice", parents=[common],
                    help="show legal notice").set_defaults(func=cmd_notice)
 
     ns = ap.parse_args(argv)
     return ns.func(ns)
-
-
-def cmd_info(ns) -> int:
-    paths = [pathlib.Path(p) for p in (ns.paths or [])]
-    if not paths:
-        print("usage: czix info <apk-or-bundle> [...]")
-        return 2
-    for path in paths:
-        print(apk.inspect(path).describe())
-        print("-" * 46)
-    return 0
 
 
 if __name__ == "__main__":

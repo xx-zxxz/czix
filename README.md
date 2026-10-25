@@ -19,23 +19,42 @@ project — but 100% open source).
   of Service — including getting your Roblox account suspended. Use at your own
   risk. See `NOTICE`.
 
-## Quick start
+## Quick start — play like Sober
+
+One command does everything (bootstrap, first-run install, silent auto-update,
+launch in its own window):
 
 ```sh
-# 1. Install prerequisites (Arch example)
+# 0. one-time system prep (Arch)
 sudo pacman -S --needed waydroid python
-# Waydroid image: pick a Lineage OS ~ Android 11 system image,
-# `sudo waydroid init` then `sudo systemctl start waydroid-container`
+sudo waydroid init                    # downloads Android image
+sudo systemctl start waydroid-container
 
-# 2. Grab Czix
-git clone https://github.com/<youruser>/czix
-cd czix && pipx install .            # or: make install
+# 1. grab Czix
+git clone https://github.com/<youruser>/czix && cd czix && pipx install .
 
-# 3. Get the newest Roblox APK & install it into the container
-czix fetch        # downloads latest official APK (APKPure source)
-czix install      # installs into Waydroid
-czix trust        # pins the APK signing certificate (TOFU model)
-czix launch       # enjoy :)
+# 2. From now on:
+czix play                      # or: double-click the Czix desktop icon
+czix doctor --fix              # if anything looks off, this self-heals
+```
+
+What `czix play` guarantees, Sober-style:
+
+- ✅ launches **directly into Roblox**, not an Android home screen
+  (multi-window mode is enabled automatically = single game window)
+- ✅ first run: downloads the official APK, verifies the signer, installs
+- ✅ every run: silent update check (8-second, offline-tolerant) — auto-upgrade
+- ✅ works via `flatpak-spawn --host` from inside a Flatpak too
+
+Manual commands (also available):
+
+```sh
+czix fetch        # download latest official APK (APKPure source)
+czix install      # install into Waydroid
+czix trust        # pin the APK signing cert (TOFU)
+czix update       # explicit update check
+czix launch       # just start Roblox
+czix status       # container/session status
 ```
 
 ## How it works
