@@ -49,6 +49,12 @@ def load_config() -> dict:
         for k in DEFAULTS:
             if k in data:
                 cfg[k] = data[k]
+    # inside a Flatpak sandbox the default download dir becomes writable
+    # XDG-Downloads/czix (declared in packaging/org.czix.Czix.yml)
+    if os.environ.get("FLATPAK_ID") \
+            and cfg.get("download_dir") == DEFAULTS["download_dir"]:
+        dl = os.environ.get("XDG_DOWNLOAD_DIR") or str(Path.home() / "Downloads")
+        cfg["download_dir"] = str(Path(dl) / "czix")
     cfg["download_dir"] = str(Path(cfg["download_dir"]).expanduser())
     Path(cfg["download_dir"]).mkdir(parents=True, exist_ok=True)
     return cfg

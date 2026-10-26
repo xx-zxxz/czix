@@ -17,6 +17,8 @@ finish-args:
   - --share=network            # APK downloads
   - --talk-name=org.freedesktop.Flatpak   # flatpak-spawn --host (host waydroid)
   - --device=dri               # games window gl hints (harmless)
+  - --device=input             # container input tests (gamepad audit)
+  - --filesystem=xdg-download/czix:create  # default APK dir inside the sandbox
 build-options:
   env: {}
 modules:
@@ -24,6 +26,8 @@ modules:
     buildsystem: simple
     build-commands:
       - pip3 install --no-deps --prefix=${FLATPAK_DEST} .
+      - install -Dm644 data/org.czix.Czix.desktop /app/share/applications/org.czix.Czix.desktop
+      - install -Dm644 data/org.czix.Czix.svg /app/share/icons/hicolor/scalable/apps/org.czix.Czix.svg
     sources:
       - type: dir
         path: ..

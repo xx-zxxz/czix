@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Czix</title>
+  <desc>Original Czix icon: stacked container windows with a play mark.
+        Not affiliated with Roblox Corporation; intentionally shares no
+        design elements with the Roblox logo.</desc>
+
+  <rect x="24" y="24" width="464" height="464" rx="96" fill="#16202e"/>
+  <rect x="28" y="28" width="456" height="456" rx="92" fill="none"
+        stroke="#2c3a4f" stroke-width="8"/>
+
+  <!-- back window (container) -->
+  <rect x="150" y="118" width="180" height="276" rx="24" fill="#233246"/>
+
+  <!-- front window (app) -->
+  <rect x="196" y="150" width="180" height="276" rx="24" fill="#2f4560"
+        stroke="#5b81b4" stroke-width="10"/>
+
+  <!-- play mark -->
+  <path d="M268 246 L352 288 L268 330 Z" fill="#7fd0a0"/>
+
+  <!-- container-layer glyphs at the base of the front window -->
+  <rect x="228" y="352" width="36" height="42" rx="6" fill="#5b81b4"/>
+  <rect x="280" y="352" width="64" height="42" rx="6" fill="#5b81b4"/>
+</svg>

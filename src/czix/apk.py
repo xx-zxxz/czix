@@ -11,7 +11,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-UA = "Czix/0.1 (unofficial Roblox-on-Linux apk launcher; +https://czix.example) Python-urllib"
+UA = "Czix/0.2 (unofficial Roblox-on-Linux apk launcher; +https://czix.example) Python-urllib"
 CHUNK = 1024 * 1024
 
 
@@ -236,3 +236,27 @@ def verify_signature(path: Path) -> str | None:
         return m.group(1).lower() if m else None
     except (OSError, subprocess.TimeoutExpired):
         return None
+
+
+# CPU-ABI split naming: config.arm64_v8a.apk / split_config.arm64_v8a.apk
+_ABI_SPLIT = re.compile(
+    r"^(?:config|split_config)\.(arm64_v8a|armeabi_v7a|x86_64|x86)\.")
+
+
+def filter_split_abi(apks: list[Path], abi: str) -> tuple[list[Path], list[str]]:
+    """Keep only CPU-ABI splits for `abi` (e.g. 'arm64-v8a').
+
+    Language, density and other config splits, and base.apk, stay untouched;
+    objects whose filename names a *different* CPU ABI are dropped.
+    Returns (kept, dropped-filenames).
+    """
+    want = abi.strip().replace("-", "_").lower()
+    kept: list[Path] = []
+    dropped: list[str] = []
+    for p in apks:
+        m = _ABI_SPLIT.match(p.name)
+        if m and m.group(1) != want:
+            dropped.append(p.name)
+        else:
+            kept.append(p)
+    return kept, dropped

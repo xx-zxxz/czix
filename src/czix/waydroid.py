@@ -183,12 +183,13 @@ def ensure_environment(auto: bool = True) -> tuple[bool, str]:
         else:
             return False, "could not start container; run once: " \
                           "sudo systemctl start waydroid-container"
-    if st.get("service") == "NOT RUNNING" and st:
+    if not _image_present():
         if not auto:
-            return False, "waydroid service is not running (needs image init: " \
-                          "sudo waydroid init)"
-        else:
-            return False, "waydroid has no image; run once: sudo waydroid init"
+            return False, "waydroid image missing - need `sudo waydroid init`"
+        if not init_image():
+            return False, ("could not initialize the waydroid image; run once: "
+                           "sudo waydroid init (downloads the system image)")
+        print("  container image initialized.")
 
     if not _session_running():
         if not auto:
@@ -221,6 +222,9 @@ def _prop_get(name: str) -> str:
         return ""
 
 
+prop_get = _prop_get  # public alias for the `czix prop` command group
+
+
 def _prop_set(name: str, value: str) -> bool:
     """Try user-level set; fall back to pkexec."""
     try:
@@ -230,6 +234,54 @@ def _prop_set(name: str, value: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         pass
     return _pkexec(["waydroid", "prop", "set", name, value])
+
+
+prop_set = _prop_set  # public alias for the `czix prop` command group
+
+
+def abilist() -> list[str]:
+    """CPU ABIs the container reports (ro.product.cpu.abilist). Empty = unknown."""
+    try:
+        p = run(["shell", "--", "getprop", "ro.product.cpu.abilist"],
+                timeout=30)
+        return [a for a in (p.stdout or "").strip().split(",") if a]
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
+# Curated, documented Waydroid properties - shown by `czix prop list`.
+PROPS = (
+    ("persist.waydroid.multi_windows",
+     "false = every app in its own window (Sober-like); true = one big window"),
+    ("persist.waydroid.fake_touch",
+     "treat mouse input as touch (some games only accept touch)"),
+    ("persist.waydroid.cursor_on_subsurface",
+     "keep a visible cursor inside the container surface"),
+    ("persist.waydroid.width", "container display width in pixels"),
+    ("persist.waydroid.height", "container display height in pixels"),
+)
+
+
+def _image_present() -> bool:
+    img = "/var/lib/waydroid/images/system.img"
+    if os.path.exists(img):
+        return True
+    try:  # inside a Flatpak sandbox: ask the host
+        r = subprocess.run(base_cmd() + ["test", "-f", img],
+                           capture_output=True, timeout=30)
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def init_image(timeout_s: int = 1800) -> bool:
+    """Run `waydroid init` via pkexec to download the container image."""
+    print("Running `waydroid init` (system image download, "
+          "authorization prompt - can take several minutes)…")
+    if _pkexec(["waydroid", "init"], timeout=timeout_s):
+        if _poll(_image_present, 60):
+            return True
+    return _image_present()
 
 
 def installed_version(package: str) -> str | None:
@@ -247,6 +299,14 @@ def doctor(fix: bool = False) -> list[tuple[str, bool, str]]:
     wd = waydroid()
     checks.append(("waydroid binary", bool(wd), HINT if not wd else "ok"))
     if wd:
+        img = _image_present()
+        checks.append(("container image", img, "ok" if img else
+                       "--fix runs `waydroid init` (pkexec; system-image "
+                       "download takes a while)"))
+        if fix and not img:
+            img = init_image()
+            checks.append(("container image (after fix)", img,
+                           "ok" if img else "failed"))
         st = status_text()
         cok = st.get("container") == "RUNNING"
         sok = st.get("session") == "RUNNING"

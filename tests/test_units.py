@@ -11,12 +11,15 @@ os.environ.setdefault("XDG_STATE_HOME",
 os.environ.setdefault("XDG_CONFIG_HOME",
                       tempfile.mkdtemp(prefix="czix-test-config-"))
 
-from czix.apk import is_apk, normalize_bundle            # noqa: E402
+from czix import trace as czix_trace
+from czix.apk import (filter_split_abi, is_apk,   # noqa: E402
+                      normalize_bundle)
 from czix.cli import _vkey                               # noqa: E402
 from czix.config import pin_trusted, read_trusted        # noqa: E402
 from czix.elfdyn import parse as elf_parse               # noqa: E402
 from czix.sources.archiveorg import _parse_version       # noqa: E402
 from czix.surface import _categorize                     # noqa: E402
+from czix.waydroid import PROPS                          # noqa: E402
 
 
 def test_bundle_base_first():
@@ -81,6 +84,62 @@ def test_categorize():
     assert _categorize("__system_property_get") == "props"
     assert _categorize("malloc") == "bionic-cxx-std"
     assert _categorize("curses_unknown_platform_thing") == "other-platform-relevant"
+
+
+def test_filter_split_abi():
+    names = ["base.apk", "config.arm64_v8a.apk", "config.armeabi_v7a.apk",
+             "config.xxhdpi.apk", "split_config.arm64_v8a.apk", "weird.apk"]
+    paths = [pathlib.Path(n) for n in names]
+    kept, dropped = filter_split_abi(paths, "arm64-v8a")
+    assert dropped == ["config.armeabi_v7a.apk"]
+    assert [p.name for p in kept] == ["base.apk", "config.arm64_v8a.apk",
+                                      "config.xxhdpi.apk",
+                                      "split_config.arm64_v8a.apk",
+                                      "weird.apk"]
+
+
+def test_trace_collect_and_render():
+    log = (
+        "e/linker: dlopening /system/lib64/libEGL.so\n"
+        "ActivityTaskManager: Displayed com.roblox.client/act.Main +1s233ms\n"
+        "ActivityTaskManager: Displayed com.roblox.client/act.Main2 +412ms\n"
+        "VulkanDevice: vkCreateInstance unsupported on GLES path\n"
+        "AudioTrack: opened stream for voice chat\n"
+        "SQLite: scribbles\n")
+    rep = czix_trace.collect(log)
+    assert rep["total_lines"] == 6
+    assert rep["loaded_libraries"] == ["libEGL.so"]
+    assert rep["streams"]["vulkan"] == 1
+    assert rep["streams"]["audio"] == 1
+    assert czix_trace.parse_displayed(log) == [
+        ("com.roblox.client/act.Main", 1233),
+        ("com.roblox.client/act.Main2", 412)]
+    assert czix_trace.render_terminal(rep).startswith("runtime trace")
+    assert czix_trace.render_markdown(rep).startswith("# Runtime API trace")
+    assert czix_trace.json_dumps(rep).strip().startswith("{")
+
+    # static-surface correlation
+    surf = {"abis": {"arm64-v8a": {
+        "libraries": {"libEGL.so": {"machine": "aarch64", "class": 64,
+                                    "imported": 10, "exported": 5}},
+        "cats": {"egl-window": ["eglCreateContext"]},
+        "needed": []}}}
+    rep2 = czix_trace.collect(log, surface_report=surf)
+    assert rep2["fired_categories"]["libEGL.so"] == ["egl-window"]
+    assert rep2["unmatched_libraries"] == 0
+    assert rep2["categories"] == ["egl-window"]
+
+
+def test_trace_load_library_variant():
+    loads = czix_trace.parse_lib_loads('app: System.loadLibrary("libfoo.so")')
+    assert list(loads) == ["libfoo.so"]
+
+
+def test_props_documented():
+    assert PROPS
+    for name, desc in PROPS:
+        assert name.startswith("persist.waydroid.")
+        assert len(desc) > 10
 
 
 def main() -> None:
