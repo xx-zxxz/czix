@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "czix"
-version = "0.2.0"
+version = "0.2.1"
 description = "Unofficial launcher for Roblox on Linux (Waydroid phase 0)"
 readme = "README.md"
 requires-python = ">=3.10"

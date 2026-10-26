@@ -31,9 +31,23 @@ def test_bundle_base_first():
         z.writestr("config.arm64_v8a.apk", b"S")
         z.writestr("x_categorical_foo.apk", b"X")
     out = normalize_bundle(fake, work_dir=tmp)
-    assert [o.name for o in out] == ["base.apk", "config.arm64_v8a.apk",
-                                     "x_categorical_foo.apk"]
+    assert [o.name for o in out] == ["base.apk", "x_categorical_foo.apk",
+                                     "config.arm64_v8a.apk"]
     assert not is_apk(fake)  # the container itself is not an apk
+
+
+def test_bundle_named_base_first():
+    """Real XAPKs name the base freely - it must still sort first."""
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="czix-test-"))
+    fake = tmp / "app.xapk"
+    with zipfile.ZipFile(fake, "w") as z:
+        z.writestr("manifest.json", b'{"package":"com.roblox.client"}')
+        z.writestr("com.roblox.client.apk", b"B" * 9000)   # the base
+        z.writestr("config.arm64_v8a.apk", b"S")           # split
+        z.writestr("config.mdpi.apk", b"D")
+    out = normalize_bundle(fake, work_dir=tmp)
+    assert [o.name for o in out] == ["com.roblox.client.apk",
+                                     "config.arm64_v8a.apk", "config.mdpi.apk"]
 
 
 def test_version_compare():

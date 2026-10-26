@@ -11,7 +11,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-UA = "Czix/0.2 (unofficial Roblox-on-Linux apk launcher; +https://czix.example) Python-urllib"
+UA = "Czix/0.2.1 (unofficial Roblox-on-Linux apk launcher; +https://czix.example) Python-urllib"
 CHUNK = 1024 * 1024
 
 
@@ -120,8 +120,18 @@ def inspect(path: Path) -> ApkInfo:
     info.sha256 = sha256_file(path)
     if is_apk(path):
         _aapt_inspect(path, info)
+        try:
+            axml = _manifest_axml(path)
+        except Exception:  # noqa: BLE001 - always cosmetic metadata
+            axml = {}
+        info.package = info.package or axml.get("package")
+        info.version_name = info.version_name or axml.get("version_name")
+        info.version_code = info.version_code or axml.get("version_code")
+        if axml.get("split"):
+            info.is_split = True
         if not info.version_name:
-            # no aapt? best-effort from the file name (mirrors embed version)
+            # no aapt and no AXML hit? best-effort from the file name
+            # (mirrors embed version in their archive names)
             m = re.search(r"(\d+(?:\.\d+){1,3})", path.name)
             if m:
                 info.version_name = m.group(1)
@@ -134,6 +144,95 @@ def inspect(path: Path) -> ApkInfo:
         except zipfile.BadZipFile:
             pass
     return info
+
+
+# ---- binary AndroidManifest.xml (AXML) - stdlib only ------------------------
+
+def _axml_strings(buf: bytes, chunk: int) -> list[str]:
+    """Parse the string-pool chunk at `chunk` offset into a list of strings."""
+    import struct
+    string_count, _style_count, flags, strings_start, _styles_start = \
+        struct.unpack_from("<IIIII", buf, chunk + 8)
+    header_size = struct.unpack_from("<H", buf, chunk + 2)[0]
+    offsets_base = chunk + header_size
+    pool_base = chunk + strings_start
+    utf8 = bool(flags & 0x100)
+    out: list[str] = []
+    for i in range(string_count):
+        s_off = pool_base + struct.unpack_from("<I", buf,
+                                               offsets_base + 4 * i)[0]
+        if utf8:
+            n = buf[s_off]
+            if n & 0x80:
+                n = ((n & 0x7F) << 8) | buf[s_off + 1]
+                s_off += 2
+            else:
+                s_off += 1
+            skip = buf[s_off]  # redundant byte-length prefix
+            s_off += 2 if skip & 0x80 else 1
+            out.append(buf[s_off:s_off + n].decode("utf-8", "replace"))
+        else:
+            h = struct.unpack_from("<H", buf, s_off)[0]
+            if h & 0x8000:
+                n = ((h & 0x7FFF) << 16) | \
+                    struct.unpack_from("<H", buf, s_off + 2)[0]
+                s_off += 4
+            else:
+                n = h
+                s_off += 2
+            out.append(buf[s_off:s_off + 2 * n].decode("utf-16-le", "replace"))
+    return out
+
+
+def _manifest_axml(path: Path) -> dict:
+    """(package, versionName, versionCode, split?) from the binary AXML."""
+    import struct
+    with zipfile.ZipFile(path) as z:
+        buf = z.read("AndroidManifest.xml")
+    out: dict = {}
+    strings: list[str] | None = None
+    cur = 0
+    while cur + 8 <= len(buf):
+        ctype, hsize, csize = struct.unpack_from("<HHI", buf, cur)
+        if csize < 8 or cur + csize > len(buf):
+            break
+        if ctype == 0x0003:
+            cur += hsize  # whole-file XML wrapper: walk its children
+            continue
+        if ctype == 0x0001 and strings is None:
+            strings = _axml_strings(buf, cur)
+        elif ctype == 0x0102 and strings is not None:
+            name_ref = struct.unpack_from("<I", buf, cur + 20)[0]
+            if 0 <= name_ref < len(strings) and strings[name_ref] == "manifest":
+                # ResXMLTree_attrExt: node header (hsize bytes: generic 8 +
+                # line 4 + comment 4), then ns(4) name(4); attributeStart is
+                # relative to the attrExt block itself.
+                attr_start, attr_size, attr_count = struct.unpack_from(
+                    "<HHH", buf, cur + 24)
+                attrs_base = cur + hsize + attr_start
+                for i in range(attr_count):
+                    at = attrs_base + i * attr_size
+                    _ns, n_ref, raw = struct.unpack_from("<III", buf, at)
+                    data = struct.unpack_from("<I", buf, at + 16)[0]
+                    dtype = buf[at + 15]  # Res_value.dataType (res0 at +14)
+                    a_name = (strings[n_ref]
+                              if 0 <= n_ref < len(strings) else None)
+                    val = (strings[raw] if 0 <= raw < len(strings)
+                           else strings[data] if dtype == 3 and 0 <= data < len(strings)
+                           else str(data) if dtype == 0x10
+                           else hex(data) if dtype == 0x11
+                           else None)
+                    if a_name == "package":
+                        out["package"] = val
+                    elif a_name == "versionName":
+                        out["version_name"] = val
+                    elif a_name == "versionCode":
+                        out["version_code"] = str(data) if val is None else val
+                    elif a_name == "split":
+                        out["split"] = val or "1"
+                return out
+        cur += csize
+    return out
 
 
 # ---- download --------------------------------------------------------------
@@ -213,12 +312,21 @@ def normalize_bundle(path: Path, work_dir: Path | None = None,
             return normalize_bundle(inner, work_dir, _depth + 1)
 
         paths: list[Path] = []
-        for n in sorted(apk_names, key=lambda n: (n == "base.apk", z.getinfo(n).file_size)):
+        for n in apk_names:
             target = out_dir / Path(n).name
             target.write_bytes(z.read(n))
             paths.append(target)
-    # order: base first → good for pm install
-    return sorted(paths, key=lambda p: 0 if p.name == "base.apk" else 1)
+    # order: the base must land before any split. Bases are named freely in
+    # the wild ("base.apk", "<package>.apk", "roblox-2.744.apk"…) so base
+    # detection is structural: anything named config.* / split_config.* is a
+    # split; among non-config APKs the big one is the base.
+    return sorted(paths, key=lambda p: (1 if _is_config_split(p.name) else 0,
+                                        -p.stat().st_size, p.name))
+
+
+def _is_config_split(name: str) -> bool:
+    stem = name.rsplit("/", 1)[-1].lower()
+    return stem.startswith("config.") or stem.startswith("split_config.")
 
 
 def verify_signature(path: Path) -> str | None:
